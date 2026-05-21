@@ -1,0 +1,63 @@
+# vLLM Server Configuration
+# Model configuration - can be overridden by MODEL_NAME environment variable
+model:
+  # Model name or path (e.g., "Qwen/Qwen3-Next-80B-A3B-Thinking-FP8" or local path)
+  name: "google/gemma-4-E4B-it"
+  
+  # Trust remote code (required for some models)
+  trust_remote_code: false
+
+# API Server Configuration
+server:
+  host: "127.0.0.1"
+  port: 8000
+  api_key: "" # Set to a string if you want API key authentication
+
+# Generation Parameters
+generation:
+  temperature: 1.0
+  max_tokens: 32768
+  top_p: 0.95
+  top_k: 20
+  repetition_penalty: 1.0
+  presence_penalty: 1.5
+
+# When true, allows Qwen3.5 VL checkpoints that only ship language weights (no
+# model.visual.* tensors). Vision stays randomly initialized — use text-only.
+# allow_missing_vision_weights: true
+
+# GPU/Device Configuration
+gpu:
+  # Specific GPU IDs to use (e.g., [6, 7] for GPUs 6 and 7)
+  # If null, all available GPUs will be used
+  # This sets CUDA_VISIBLE_DEVICES environment variable
+  gpu_ids: [0]
+  # GPU memory utilization (0.0 to 1.0)
+  gpu_memory_utilization: 0.95
+
+# Tensor Parallelism (for multi-GPU)
+tensor_parallel_size: 1
+
+# Model Context Length
+# Maximum sequence length the model can handle
+max_model_len: 131072
+# max_model_len: 202752
+max_num_seqs: 1
+
+# KV Cache Configuration
+# Data type for key-value cache (fp8, fp16, etc.)
+kv_cache_dtype: "auto"
+
+# Additional vLLM arguments
+# Enable tool calling support for LangGraph agents
+additional_args:
+  - "--enable-auto-tool-choice"
+  - "--tool-call-parser"
+  - "gemma4"
+  - "--reasoning-parser"
+  - "gemma4"
+  - "--language-model-only"
+  - "--chat-template"
+  - "examples/tool_chat_template_gemma4.jinja"
+  - "--speculative-config"
+  - '{"model": "google/gemma-4-E4B-it-assistant", "num_speculative_tokens": 1}'
