@@ -52,11 +52,14 @@ def strip_thinking_from_content(content):
     return cleaned.strip()
 
 
-def chat(messages, verbose=False, on_chunk=None):
+def chat(messages, verbose=False, on_chunk=None, on_thinking_chunk=None, on_thinking_done=None, no_eos=False):
     """Stream tokens with diagnostics. If verbose, also dump raw chunks.
 
-    on_chunk(partial_content: str) is called after every content delta with
-    the full content accumulated so far, enabling live file updates.
+    on_chunk(partial_content)         called on every content delta (post-thinking).
+    on_thinking_chunk(partial_thinking) called on every thinking delta.
+    on_thinking_done(full_thinking)   called once when <channel|> is seen and
+                                      thinking is complete.
+    no_eos: suppress EOS/end-of-turn tokens via logit_bias.
     """
     payload = {
         "model": MODEL,
@@ -67,6 +70,9 @@ def chat(messages, verbose=False, on_chunk=None):
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    if no_eos:
+        # Gemma4 stop tokens: 1=<eos>, 105=<|turn|>, 106=<turn|>
+        payload["logit_bias"] = {"1": -100, "105": -100, "106": -100}
     response = requests.post(URL, json=payload, headers=HEADERS, stream=True)
     if response.status_code != 200:
         print("Error: HTTP %d: %s\n" % (response.status_code, response.text))
@@ -74,69 +80,74 @@ def chat(messages, verbose=False, on_chunk=None):
 
     content_parts = []
     reasoning_parts = []
-    content_buffer = ""   # holds content before <channel|> separator
-    channel_seen = False  # True once <channel|> has been found
+    channel_seen = False  # True once <channel|> separator has been seen
     thinking_started = False
     response_started = False
     raw_chunks = [] if verbose else None
     finish_reason = None
     usage = {}
 
-    for line in response.iter_lines():
-        if not line:
-            continue
-        decoded = line.decode()
-        if not decoded.startswith("data: "):
-            continue
-        data_str = decoded.split("data: ", 1)[1]
-        if data_str == "[DONE]":
-            break
-        if raw_chunks is not None:
-            raw_chunks.append(data_str)
-        try:
-            data = json.loads(data_str)
-        except json.JSONDecodeError:
-            continue
-        if data.get("usage"):
-            usage = data["usage"]
-            continue
-        if not data.get("choices"):
-            continue
-        choice = data["choices"][0]
-        if choice.get("finish_reason"):
-            finish_reason = choice["finish_reason"]
-        delta = choice.get("delta", {})
-        content = delta.get("content", "")
-        reasoning = delta.get("reasoning", "") or delta.get("reasoning_content", "")
-        if reasoning:
-            if not thinking_started:
-                sys.stdout.write("\033[90m── Thinking ──────────────────────────────────\033[0m\n")
-                thinking_started = True
-            sys.stdout.write("\033[1;35m" + reasoning + "\033[0m")
-            reasoning_parts.append(reasoning)
-            sys.stdout.flush()
-        if content:
-            if channel_seen:
-                if not response_started:
-                    sys.stdout.write("\n\033[1;36m── Response ───────────────────────────────────\033[0m\n")
-                    response_started = True
-                sys.stdout.write(content)
-                content_parts.append(content)
+    interrupted = False
+    try:
+        for line in response.iter_lines():
+            if not line:
+                continue
+            decoded = line.decode()
+            if not decoded.startswith("data: "):
+                continue
+            data_str = decoded.split("data: ", 1)[1]
+            if data_str == "[DONE]":
+                break
+            if raw_chunks is not None:
+                raw_chunks.append(data_str)
+            try:
+                data = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+            if data.get("usage"):
+                usage = data["usage"]
+                continue
+            if not data.get("choices"):
+                continue
+            choice = data["choices"][0]
+            if choice.get("finish_reason"):
+                finish_reason = choice["finish_reason"]
+            delta = choice.get("delta", {})
+            content = delta.get("content", "")
+            reasoning = delta.get("reasoning", "") or delta.get("reasoning_content", "")
+            if reasoning:
+                if not thinking_started:
+                    sys.stdout.write("\033[90m── Thinking ──────────────────────────────────\033[0m\n")
+                    thinking_started = True
+                sys.stdout.write("\033[1;35m" + reasoning + "\033[0m")
+                reasoning_parts.append(reasoning)
                 sys.stdout.flush()
-                if on_chunk:
-                    on_chunk("".join(content_parts))
-            else:
-                # Buffer until <channel|> separator is found.
-                content_buffer += content
-                if "<channel|>" in content_buffer:
+                if on_thinking_chunk:
+                    on_thinking_chunk("".join(reasoning_parts))
+            if content:
+                if channel_seen:
+                    if not response_started:
+                        sys.stdout.write("\n\033[1;36m── Response ───────────────────────────────────\033[0m\n")
+                        response_started = True
+                    sys.stdout.write(content)
+                    content_parts.append(content)
+                    sys.stdout.flush()
+                    if on_chunk:
+                        on_chunk("".join(content_parts))
+                elif "<channel|>" in content:
                     channel_seen = True
-                    before, after = content_buffer.split("<channel|>", 1)
+                    before, after = content.split("<channel|>", 1)
                     if before:
                         if not thinking_started:
                             sys.stdout.write("\033[90m── Thinking ──────────────────────────────────\033[0m\n")
                             thinking_started = True
                         sys.stdout.write("\033[1;35m" + before + "\033[0m")
                         reasoning_parts.append(before)
+                        if on_thinking_chunk:
+                            on_thinking_chunk("".join(reasoning_parts))
+                    # Thinking complete — fire the done callback.
+                    if on_thinking_done:
+                        on_thinking_done("".join(reasoning_parts))
                     sys.stdout.write("\n\033[1;36m── Response ───────────────────────────────────\033[0m\n")
                     response_started = True
                     if after:
@@ -145,7 +156,22 @@ def chat(messages, verbose=False, on_chunk=None):
                         if on_chunk:
                             on_chunk("".join(content_parts))
                     sys.stdout.flush()
-                # else: still buffering, nothing to print yet
+                else:
+                    if not thinking_started:
+                        sys.stdout.write("\033[90m── Thinking ──────────────────────────────────\033[0m\n")
+                        thinking_started = True
+                    sys.stdout.write("\033[1;35m" + content + "\033[0m")
+                    reasoning_parts.append(content)
+                    sys.stdout.flush()
+                    if on_thinking_chunk:
+                        on_thinking_chunk("".join(reasoning_parts))
+    except KeyboardInterrupt:
+        interrupted = True
+        finish_reason = "interrupted"
+        sys.stdout.write("\033[33m  [interrupted]\033[0m")
+        sys.stdout.flush()
+    finally:
+        response.close()
 
     sys.stdout.write("\n")
 
@@ -156,10 +182,25 @@ def chat(messages, verbose=False, on_chunk=None):
         print("\033[1;33m========== END RAW CHUNKS (total: %d) ==========\033[0m" % len(raw_chunks or []))
 
     reasoning_text = "".join(reasoning_parts)
-    if finish_reason and finish_reason != "stop":
-        sys.stdout.write("\033[33m  Finish reason: %s\033[0m\n" % finish_reason)
-
     return "".join(content_parts), reasoning_text, usage, finish_reason
+
+
+def count_tokens(text):
+    """Return the token count for a raw text string via vLLM's /tokenize endpoint."""
+    if not text:
+        return 0
+    try:
+        r = requests.post(
+            URL.replace("/v1/chat/completions", "/tokenize"),
+            json={"model": MODEL, "prompt": text},
+            headers=HEADERS,
+            timeout=5,
+        )
+        if r.status_code == 200:
+            return r.json().get("count", 0)
+    except Exception:
+        pass
+    return 0
 
 
 def load_history(history_file):
@@ -171,8 +212,11 @@ def load_history(history_file):
 
 
 def write_history(history_file, history):
-    with open(Path(history_file), "w") as f:
+    history_file = Path(history_file)
+    tmp = history_file.with_name("." + history_file.name + ".tmp")
+    with open(tmp, "w") as f:
         json.dump(history, f, indent=2)
+    tmp.rename(history_file)  # atomic on POSIX — never leaves the file empty
 
 
 
@@ -233,6 +277,7 @@ def main():
     history = []
     prev_prompt_tokens = 0      # prompt_tokens from the previous turn
     prev_completion_tokens = 0  # completion_tokens from the previous turn
+    no_eos = False              # when True, suppress EOS/end-of-turn tokens
     if args.continue_chat:
         history = load_history(history_file)
 
@@ -242,6 +287,7 @@ def main():
     print("\033[1;34m║     Model: %s            ║\033[0m" % MODEL)
     print("\033[1;34m║                                                             ║\033[0m")
     print("\033[1;22;34m║     :reset  - Clear history                                   ║\033[0m")
+    print("\033[1;22;34m║     :noeos  - Toggle EOS suppression (keep generating)        ║\033[0m")
     print("\033[1;22;34m║     :quit   - Exit                                          ║\033[0m")
     print("\033[1;34m║     Use --verbose on startup for raw API chunks             ║\033[0m")
     print("\033[1;34m╚══════════════════════════════════════════════════════════════╝\033[0m")
@@ -272,6 +318,12 @@ def main():
             print("\033[32m[RESET]\033[0m History cleared.\n")
             continue
 
+        if user_input == ":noeos":
+            no_eos = not no_eos
+            state = "ON" if no_eos else "OFF"
+            print("\033[33m[NO-EOS]\033[0m EOS suppression %s\n" % state)
+            continue
+
         # Build the context window from history (newest → oldest) using exact
         # stored token counts, then append the new user message.
         messages, sent_history_tokens = build_messages(history, SYSTEM_PROMPT)
@@ -287,43 +339,76 @@ def main():
             live_entry["content"] = partial
             write_history(history_file, history)
 
+        def _live_thinking_update(partial: str):
+            live_entry["thinking"] = partial
+            write_history(history_file, history)
+
+        def _thinking_done(full: str):
+            live_entry["thinking"] = full
+            write_history(history_file, history)
+
         print("\n\033[1;36mAssistant:\033[0m\n")
-        text, reasoning, usage, finish_reason = chat(messages, verbose=args.verbose, on_chunk=_live_update)
+        text, reasoning, usage, finish_reason = chat(
+            messages, verbose=args.verbose,
+            on_chunk=_live_update,
+            on_thinking_chunk=_live_thinking_update,
+            on_thinking_done=_thinking_done,
+            no_eos=no_eos,
+        )
 
-        if text and usage:
-            prompt_tokens     = usage.get("prompt_tokens", 0)
-            completion_tokens = usage.get("completion_tokens", 0)
-
-            # With thinking kept in context, completion_tokens is the exact token
-            # cost of the assistant message in the next prompt.
-            # user_tokens = what vLLM counted for the new user message alone.
-            user_tokens = prompt_tokens - prev_prompt_tokens - prev_completion_tokens
-            history[-2]["tokens"] = user_tokens
-
-            # Split completion_tokens into thinking vs content by char ratio.
-            thinking_chars = len(reasoning)
-            content_chars  = len(text)
-            total_chars    = thinking_chars + content_chars
-            if total_chars > 0:
-                thinking_tokens = round(completion_tokens * thinking_chars / total_chars)
-            else:
-                thinking_tokens = 0
-            content_tokens = completion_tokens - thinking_tokens
-
+        if text:
             # Finalise assistant entry; keep thinking for context inclusion.
             live_entry["content"]  = text
             live_entry["thinking"] = reasoning
-            live_entry["tokens"]   = completion_tokens
+            live_entry["finish_reason"] = finish_reason
 
-            prev_prompt_tokens     = prompt_tokens
-            prev_completion_tokens = completion_tokens
+            if usage:
+                prompt_tokens     = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
 
-            sys.stdout.write(
-                "\033[90m  User: %d tokens │ Thinking: ~%d tokens │ Content: ~%d tokens │ Context: %d / %d\033[0m\n"
-                % (user_tokens, thinking_tokens, content_tokens, prompt_tokens, CONTEXT_WINDOW + MAX_TOKENS)
-            )
+                user_tokens = prompt_tokens - prev_prompt_tokens - prev_completion_tokens
+                history[-2]["tokens"] = user_tokens
+
+                # Split completion_tokens into thinking vs content by char ratio.
+                thinking_chars = len(reasoning)
+                content_chars  = len(text)
+                total_chars    = thinking_chars + content_chars
+                if total_chars > 0:
+                    thinking_tokens = round(completion_tokens * thinking_chars / total_chars)
+                else:
+                    thinking_tokens = 0
+                content_tokens = completion_tokens - thinking_tokens
+
+                live_entry["tokens"] = completion_tokens
+
+                prev_prompt_tokens     = prompt_tokens
+                prev_completion_tokens = completion_tokens
+
+                stop_color = "\033[33m" if finish_reason != "stop" else "\033[90m"
+                sys.stdout.write(
+                    "\033[90m  User: %d tokens │ Thinking: ~%d tokens │ Content: ~%d tokens │ Context: %d / %d │ %sStop: %s\033[0m\n"
+                    % (user_tokens, thinking_tokens, content_tokens, prompt_tokens, CONTEXT_WINDOW + MAX_TOKENS, stop_color, finish_reason)
+                )
+            else:
+                # Interrupted before usage chunk — use /tokenize to recover counts.
+                full_generation = (reasoning + "<channel|>" + text) if reasoning else text
+                completion_tokens = count_tokens(full_generation)
+                user_tokens = count_tokens(user_input)
+
+                history[-2]["tokens"] = user_tokens
+                live_entry["tokens"]  = completion_tokens
+
+                # Advance the tracking variables so the NEXT turn's delta is
+                # computed correctly (partial generation will be in its prompt).
+                prev_prompt_tokens     = prev_prompt_tokens + user_tokens + completion_tokens
+                prev_completion_tokens = completion_tokens
+
+                sys.stdout.write(
+                    "\033[33m  User: ~%d tokens │ Generation: ~%d tokens (tokenized) │ Stop: %s\033[0m\n"
+                    % (user_tokens, completion_tokens, finish_reason)
+                )
         else:
-            # No response — remove the placeholder pair.
+            # No content at all — remove the placeholder pair.
             history.pop()
             history.pop()
 
