@@ -19,10 +19,9 @@ except ImportError:
 
 
 URL = "http://127.0.0.1:8000/v1/chat/completions"
-MODEL = "google/gemma-4-E4B-it"
+MODEL = "gemma4"
 API_KEY = ""
 
-MAX_TOKENS = 32_768          # max generation length
 CONTEXT_WINDOW = 96_000      # history budget = 128k - 32k generation headroom
 
 HEADERS = {"Authorization": f"Bearer {API_KEY}"} if API_KEY else {}
@@ -64,9 +63,6 @@ def chat(messages, verbose=False, on_chunk=None, on_thinking_chunk=None, on_thin
     payload = {
         "model": MODEL,
         "messages": messages,
-        "temperature": 0.9,
-        "max_tokens": MAX_TOKENS,
-        "top_p": 0.95,
         "stream": True,
         "stream_options": {"include_usage": True},
     }
@@ -356,7 +352,7 @@ def main():
             no_eos=no_eos,
         )
 
-        if text:
+        if text or reasoning:
             # Finalise assistant entry; keep thinking for context inclusion.
             live_entry["content"]  = text
             live_entry["thinking"] = reasoning
@@ -386,12 +382,12 @@ def main():
 
                 stop_color = "\033[33m" if finish_reason != "stop" else "\033[90m"
                 sys.stdout.write(
-                    "\033[90m  User: %d tokens │ Thinking: ~%d tokens │ Content: ~%d tokens │ Context: %d / %d │ %sStop: %s\033[0m\n"
-                    % (user_tokens, thinking_tokens, content_tokens, prompt_tokens, CONTEXT_WINDOW + MAX_TOKENS, stop_color, finish_reason)
+                    "\033[90m  User: %d tokens │ Thinking: ~%d tokens │ Content: ~%d tokens │ Context: %d  │ %sStop: %s\033[0m\n"
+                    % (user_tokens, thinking_tokens, content_tokens, prompt_tokens, stop_color, finish_reason)
                 )
             else:
                 # Interrupted before usage chunk — use /tokenize to recover counts.
-                full_generation = (reasoning + "<channel|>" + text) if reasoning else text
+                full_generation = reasoning + ("<channel|>" + text if text else "")
                 completion_tokens = count_tokens(full_generation)
                 user_tokens = count_tokens(user_input)
 
