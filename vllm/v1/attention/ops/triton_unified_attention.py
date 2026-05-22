@@ -956,6 +956,22 @@ def unified_attention(
     segm_expsum_ptr = softmax_segm_expsum if use_3d else out
     num_segments = num_par_softmax_segments if use_3d else 1
 
+    # Pre-Ampere GPUs (sm < 80, e.g. T4 at sm_75) cap shared memory per block
+    # at 64 KB.  Triton's 3-stage pipeline allocates
+    #   3 × 2 (K+V) × TILE_SIZE × HEAD_SIZE_PADDED × element_size bytes.
+    # For large heads (e.g. Gemma4: HEAD_SIZE_PADDED=256, fp16, TILE_SIZE=32)
+    # this is 98304 bytes, overflowing the hardware limit.  Clamp TILE_SIZE
+    # down to the largest power-of-two that fits within the budget.
+    # Ampere and newer expose ≥128 KB and are unaffected.
+    _cap = current_platform.get_device_capability()
+    _sm = _cap.to_int() if _cap is not None else 90
+    if _sm < 80:
+        _tile_budget = 65536 // (3 * 2 * head_size_padded * q.element_size())
+        _tile_p2 = triton.next_power_of_2(max(1, _tile_budget))
+        _max_tile = max(16, _tile_p2 if _tile_p2 <= _tile_budget else _tile_p2 // 2)
+        TILE_SIZE_PREFILL = min(TILE_SIZE_PREFILL, _max_tile)
+        TILE_SIZE_DECODE = min(TILE_SIZE_DECODE, _max_tile)
+
     grid: tuple[Any, ...]
     if not use_3d:
         grid = (total_num_q_blocks, num_kv_heads)
