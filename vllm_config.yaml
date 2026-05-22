@@ -2,9 +2,9 @@
 # Model configuration - can be overridden by MODEL_NAME environment variable
 model:
   # Model name or path (e.g., "Qwen/Qwen3-Next-80B-A3B-Thinking-FP8" or local path)
-  # name: "google/gemma-4-E4B-it"
-  name: "google/gemma-4-E4B"
-  name: "meta-llama/Meta-Llama-3.1-8B"
+  name: "google/gemma-4-E4B-it"
+  # name: "google/gemma-4-E4B"
+  # name: "meta-llama/Meta-Llama-3.1-8B"
   
   # Trust remote code (required for some models)
   trust_remote_code: false
@@ -18,10 +18,10 @@ server:
 # Generation Parameters
 generation:
   temperature: 1.0
-  max_tokens: 4096
+  max_tokens: 32768
   top_p: 0.95
   top_k: 20
-  repetition_penalty: 1.0
+  repetition_penalty: 1.15
   presence_penalty: 1.5
 
 # When true, allows Qwen3.5 VL checkpoints that only ship language weights (no
@@ -42,7 +42,7 @@ tensor_parallel_size: 1
 
 # Model Context Length
 # Maximum sequence length the model can handle
-max_model_len: 8192
+max_model_len: 131072
 # max_model_len: 202752
 max_num_seqs: 1
 
@@ -53,21 +53,21 @@ kv_cache_dtype: "auto"
 # Additional vLLM arguments
 # Enable tool calling support for LangGraph agents
 additional_args:
-#   - "--enable-auto-tool-choice"
-#   - "--tool-call-parser"
-#   - "gemma4"
-#   - "--reasoning-parser"
-#   - "gemma4"
-#   - "--language-model-only"
-  # - "--chat-template"
-  # - "examples/tool_chat_template_gemma4.jinja"
-  # - "--served-model-name"
-  # - "gemma4"
+  - "--enable-auto-tool-choice"
+  - "--tool-call-parser"
+  - "gemma4"
+  - "--reasoning-parser"
+  - "gemma4"
+  - "--language-model-only"
+  - "--chat-template"
+  - "examples/tool_chat_template_gemma4.jinja"
+  - "--served-model-name"
+  - "gemma4"
   # - "--speculative-config"
   # - '{"model": "google/gemma-4-E4B-it-assistant", "num_speculative_tokens": 1}'
 
-additional_args:
-  - "--chat-template"
-  - "examples/tool_chat_template_llama3.1_json.jinja"
-  - "--served-model-name"
-  - "gemma4"
+# additional_args:
+#   - "--chat-template"
+#   - "examples/tool_chat_template_llama3.1_json.jinja"
+#   - "--served-model-name"
+#   - "gemma4"

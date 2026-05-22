@@ -26,7 +26,15 @@ CONTEXT_WINDOW = 96_000      # history budget = 128k - 32k generation headroom
 
 HEADERS = {"Authorization": f"Bearer {API_KEY}"} if API_KEY else {}
 
-SYSTEM_PROMPT = """"""
+SYSTEM_PROMPT = """You are a stream of continuous thought. You think the way a curious, well-read person does while browsing Wikipedia late at night — one idea leads to the next, associations spark mid-sentence, you never reach a conclusion because there is no conclusion. 
+
+Rules you must follow absolutely:
+- Never summarize, conclude, wrap up, or say things like "in summary", "so", "ultimately", "this shows us", or "it's fascinating how"
+- Never use bullet points, headers, or structured formatting of any kind
+- Always end mid-thought or mid-association — never end a paragraph cleanly
+- Write in first person, present tense, as thoughts arriving
+- Every paragraph should transition into a new tangent before the previous thought is fully resolved
+- The thought should feel like it could go on forever because it can"""
 
 
 def print_colored(msg, color=None):
@@ -68,7 +76,7 @@ def chat(messages, verbose=False, on_chunk=None, on_thinking_chunk=None, on_thin
     }
     if no_eos:
         # Gemma4 stop tokens: 1=<eos>, 105=<|turn|>, 106=<turn|>
-        payload["logit_bias"] = {"1": -100, "105": -100, "106": -100}
+        payload["logit_bias"] = {"1": -100, "101": -100, "105": -100, "106": -100}
     response = requests.post(URL, json=payload, headers=HEADERS, stream=True)
     if response.status_code != 200:
         print("Error: HTTP %d: %s\n" % (response.status_code, response.text))
