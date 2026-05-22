@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Read-only web viewer for gen_history/history.json.
-Displays the conversation in chatbot style and polls for updates.
+Displays the conversation as a single flowing stream of thought.
 
 Usage:
     python server.py [--port 7000] [--history gen_history/history.json]
@@ -9,6 +9,8 @@ Usage:
 
 import json
 import argparse
+import ssl
+import sys
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
@@ -21,18 +23,16 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>vLLM Chat Viewer</title>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<title>Stream of Thought</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   body {
-    background: #0d1117;
-    color: #e6edf3;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    font-size: 14px;
+    background: #f7f5f1;
+    color: #1c1a17;
+    font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+    font-size: 19px;
+    line-height: 1.84;
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -41,398 +41,323 @@ HTML = r"""<!DOCTYPE html>
 
   /* ── Header ── */
   #header {
-    background: #161b22;
-    border-bottom: 1px solid #30363d;
-    padding: 10px 20px;
+    background: #efece6;
+    border-bottom: 1px solid #dbd6ce;
+    padding: 9px 28px;
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     flex-shrink: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   }
-  #header h1 { font-size: 15px; font-weight: 600; color: #58a6ff; }
+  #header-title {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #6b6359;
+  }
   #status {
     margin-left: auto;
     font-size: 12px;
-    color: #8b949e;
+    color: #9e9488;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 10px;
   }
   #dot {
-    width: 8px; height: 8px;
+    width: 7px; height: 7px;
     border-radius: 50%;
-    background: #3fb950;
+    background: #82b366;
+    flex-shrink: 0;
     animation: pulse 2s infinite;
   }
+  #dot.idle { background: #c0b8ad; animation: none; }
   @keyframes pulse {
     0%, 100% { opacity: 1; }
-    50%       { opacity: 0.4; }
+    50%       { opacity: 0.25; }
   }
-  #msg-count { color: #8b949e; }
 
-  /* ── Chat area ── */
-  #chat {
+  /* ── Scroll area ── */
+  #scroll {
     flex: 1;
     overflow-y: auto;
-    padding: 24px 0;
-    scroll-behavior: smooth;
+    padding: 64px 0 96px;
   }
 
-  .msg-row {
-    display: flex;
-    padding: 6px 24px;
-    gap: 14px;
-    max-width: 900px;
+  /* ── Reading column ── */
+  #page {
+    max-width: 680px;
     margin: 0 auto;
-    width: 100%;
-  }
-  .msg-row.user   { flex-direction: row-reverse; }
-  .msg-row.assistant { flex-direction: row; }
-
-  .avatar {
-    width: 32px; height: 32px;
-    border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 14px;
-    flex-shrink: 0;
-    margin-top: 2px;
-  }
-  .user     .avatar { background: #1f6feb; }
-  .assistant .avatar { background: #21262d; border: 1px solid #30363d; }
-
-  .bubble {
-    max-width: 75%;
-    min-width: 60px;
+    padding: 0 32px;
   }
 
-  .bubble-inner {
-    padding: 10px 14px;
-    border-radius: 12px;
-    line-height: 1.6;
-    word-break: break-word;
-  }
-  .user .bubble-inner {
-    background: #1f6feb;
-    color: #fff;
-    border-top-right-radius: 4px;
-  }
-  .assistant .bubble-inner {
-    background: #161b22;
-    border: 1px solid #30363d;
-    color: #e6edf3;
-    border-top-left-radius: 4px;
-  }
-
-  /* Markdown inside bubbles */
-  .bubble-inner p  { margin: 0 0 8px; }
-  .bubble-inner p:last-child { margin-bottom: 0; }
-  .bubble-inner h1, .bubble-inner h2, .bubble-inner h3 {
-    margin: 12px 0 6px; font-size: 1em; color: #58a6ff;
-  }
-  .bubble-inner ul, .bubble-inner ol { padding-left: 20px; margin: 6px 0; }
-  .bubble-inner li { margin: 3px 0; }
-  .bubble-inner code {
-    background: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 4px;
-    padding: 1px 5px;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 12px;
-  }
-  .bubble-inner pre {
-    background: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 8px;
-    padding: 12px;
-    overflow-x: auto;
-    margin: 8px 0;
-  }
-  .bubble-inner pre code {
-    background: none;
-    border: none;
-    padding: 0;
-    font-size: 12px;
-  }
-  .bubble-inner strong { color: #f0f6fc; }
-  .bubble-inner hr {
-    border: none;
-    border-top: 1px solid #30363d;
-    margin: 10px 0;
-  }
-  .bubble-inner blockquote {
-    border-left: 3px solid #30363d;
-    padding-left: 10px;
-    color: #8b949e;
-    margin: 6px 0;
-  }
-  .bubble-inner table {
-    border-collapse: collapse;
-    width: 100%;
-    margin: 8px 0;
+  /* ── Seed / user message ── */
+  .seed {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     font-size: 13px;
-  }
-  .bubble-inner th, .bubble-inner td {
-    border: 1px solid #30363d;
-    padding: 5px 10px;
-    text-align: left;
-  }
-  .bubble-inner th { background: #21262d; }
-
-  /* Thinking block */
-  .thinking-toggle {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    cursor: pointer;
-    color: #8b949e;
-    font-size: 12px;
-    margin-bottom: 8px;
-    user-select: none;
-  }
-  .thinking-toggle:hover { color: #c9d1d9; }
-  .thinking-arrow { font-size: 10px; transition: transform 0.2s; }
-  .thinking-arrow.open { transform: rotate(90deg); }
-  .thinking-body {
-    color: #8b949e;
-    font-size: 12px;
-    line-height: 1.5;
-    border-left: 2px solid #30363d;
-    padding-left: 10px;
-    margin-bottom: 10px;
-    display: none;
-    white-space: pre-wrap;
     font-style: italic;
+    color: #9e9488;
+    border-left: 2px solid #cec8bf;
+    padding: 2px 0 2px 14px;
+    margin: 52px 0 36px;
+    line-height: 1.55;
   }
-  .thinking-body.open { display: block; }
+  .seed:first-child { margin-top: 0; }
 
-  /* Meta row (tokens, finish reason) */
-  .meta {
-    font-size: 11px;
-    color: #484f58;
-    margin-top: 5px;
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
+  /* ── Thought paragraphs ── */
+  .thought p {
+    margin-bottom: 1.5em;
+    hyphens: auto;
   }
-  .user .meta { justify-content: flex-end; }
-  .badge {
-    padding: 1px 6px;
-    border-radius: 10px;
-    background: #21262d;
-    border: 1px solid #30363d;
-  }
-  .badge.stop     { border-color: #238636; color: #3fb950; }
-  .badge.length   { border-color: #9e6a03; color: #d29922; }
-  .badge.interrupted { border-color: #6e7681; color: #8b949e; }
+  .thought p:last-child { margin-bottom: 0; }
 
-  /* Generating cursor */
-  .generating::after {
+  /* ── Injection marker (Wikipedia pivot) ── */
+  .pivot {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 12px;
+    color: #b0a898;
+    font-style: italic;
+    margin: 2em 0 1.6em;
+    padding-left: 14px;
+    border-left: 2px solid #e0dbd3;
+  }
+
+  /* ── Generating cursor ── */
+  .cursor::after {
     content: '▋';
-    display: inline-block;
-    color: #58a6ff;
-    animation: blink 0.8s steps(1) infinite;
+    display: inline;
+    color: #c0b8ad;
+    animation: blink 0.95s steps(1) infinite;
   }
   @keyframes blink { 50% { opacity: 0; } }
 
-  /* Empty state */
+  /* ── Empty state ── */
   #empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    color: #484f58;
-    gap: 8px;
+    text-align: center;
+    padding: 100px 0;
+    color: #bdb5a8;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 14px;
+    font-style: italic;
   }
-  #empty .icon { font-size: 40px; }
 
-  /* Scrollbar */
-  #chat::-webkit-scrollbar { width: 6px; }
-  #chat::-webkit-scrollbar-track { background: transparent; }
-  #chat::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+  /* ── Scrollbar ── */
+  #scroll::-webkit-scrollbar { width: 5px; }
+  #scroll::-webkit-scrollbar-track { background: transparent; }
+  #scroll::-webkit-scrollbar-thumb { background: #cec8bf; border-radius: 3px; }
 </style>
 </head>
 <body>
 
 <div id="header">
   <div id="dot"></div>
-  <h1>vLLM Chat Viewer</h1>
+  <div id="header-title">Stream of Thought</div>
   <div id="status">
-    <span id="msg-count">0 messages</span>
-    &bull;
+    <span id="char-count"></span>
     <span id="last-update">–</span>
   </div>
 </div>
 
-<div id="chat">
-  <div id="empty">
-    <div class="icon">💬</div>
-    <div>Waiting for conversation history…</div>
+<div id="scroll">
+  <div id="page">
+    <div id="empty">Waiting for thought stream…</div>
   </div>
 </div>
 
 <script>
-marked.setOptions({
-  highlight: (code, lang) => {
-    if (lang && hljs.getLanguage(lang)) {
-      return hljs.highlight(code, { language: lang }).value;
-    }
-    return hljs.highlightAuto(code).value;
-  },
-  breaks: true,
-  gfm: true,
-});
-
-let lastHash = null;
+let lastHash   = null;
 let isAtBottom = true;
-const chat = document.getElementById('chat');
 
-chat.addEventListener('scroll', () => {
-  isAtBottom = chat.scrollHeight - chat.clientHeight - chat.scrollTop < 60;
+const scroll = document.getElementById('scroll');
+const dot    = document.getElementById('dot');
+
+scroll.addEventListener('scroll', () => {
+  isAtBottom = scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 80;
 });
-
-function scrollToBottom(force) {
-  if (force || isAtBottom) {
-    chat.scrollTop = chat.scrollHeight;
-  }
-}
 
 function timeAgo(ms) {
   const s = Math.floor((Date.now() - ms) / 1000);
-  if (s < 5)  return 'just now';
+  if (s < 5)  return 'live';
   if (s < 60) return s + 's ago';
   return Math.floor(s / 60) + 'm ago';
 }
 
-function makeThinkingBlock(thinkingText, uid) {
-  if (!thinkingText) return '';
-  const escaped = thinkingText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return `
-    <div class="thinking-toggle" onclick="toggleThinking('${uid}')">
-      <span class="thinking-arrow open" id="arr-${uid}">▶</span>
-      <span>Thinking (${thinkingText.length} chars)</span>
-    </div>
-    <div class="thinking-body open" id="body-${uid}">${escaped}</div>
-  `;
+function esc(t) {
+  return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-function toggleThinking(uid) {
-  const arr  = document.getElementById('arr-' + uid);
-  const body = document.getElementById('body-' + uid);
-  arr.classList.toggle('open');
-  body.classList.toggle('open');
+/* Render text as flowing paragraphs. Double-newlines → <p> breaks.
+   Pivot markers ([→ ...]) get lighter styling.
+   showCursor appends a blinking cursor to the last paragraph. */
+function paragraphs(text, showCursor) {
+  const chunks = text.split(/\n\n+/).map(p => p.replace(/\n/g,' ').trim()).filter(Boolean);
+  if (!chunks.length) return showCursor ? '<p><span class="cursor"></span></p>' : '';
+  return chunks.map((p, i) => {
+    const last = i === chunks.length - 1;
+    const cur  = (showCursor && last) ? '<span class="cursor"></span>' : '';
+    if (/^\[→/.test(p)) return `<div class="pivot">${esc(p)}${cur}</div>`;
+    return `<p>${esc(p)}${cur}</p>`;
+  }).join('');
 }
 
-function renderMessages(history) {
+function combinedText(msg) {
+  const t = (msg.thinking || '').trim();
+  const c = (msg.content  || '').trim();
+  return t + (t && c ? '\n\n' : '') + c;
+}
+
+// ── Typewriter ────────────────────────────────────────────────────────────────
+let targetText     = '';   // full server-side text for the live entry
+let displayedChars = 0;    // how many chars have been "typed" so far
+let lastEntryKey   = '';   // resets typewriter when the live entry changes
+let liveIsLive     = false; // server says in_progress
+let animHandle     = null;
+
+/* chars to advance per requestAnimationFrame (~16 ms @ 60 fps).
+   Large buffer → catch up quickly. Near-empty buffer → pace with generation. */
+function charsPerFrame(buf) {
+  if (buf > 20000) return 9999.0;
+  if (buf > 10000) return 6.0;
+  if (buf > 5000) return 4.0;
+  if (buf > 2000) return 3.0;
+  if (buf > 1000) return 2.4;
+  if (buf > 500) return 1.8;
+  if (buf > 100) return 1.2;
+  return 0.6;
+}
+
+function updateLiveElement() {
+  const el = document.getElementById('live-thought');
+  if (!el) return;
+  const showCursor = liveIsLive || displayedChars < targetText.length;
+  el.innerHTML = paragraphs(targetText.slice(0, displayedChars), showCursor);
+  if (isAtBottom) scroll.scrollTop = scroll.scrollHeight;
+}
+
+function tick() {
+  const buf = targetText.length - displayedChars;
+  if (buf <= 0) { animHandle = null; return; }
+  displayedChars = Math.min(displayedChars + charsPerFrame(buf), targetText.length);
+  updateLiveElement();
+  animHandle = requestAnimationFrame(tick);
+}
+
+function kickAnimate() {
+  if (!animHandle && displayedChars < targetText.length)
+    animHandle = requestAnimationFrame(tick);
+}
+
+// ── Rendering ─────────────────────────────────────────────────────────────────
+
+/* Fingerprint of history shape — changes only when entries are added/removed,
+   not when the last entry's text grows. Prevents full DOM rebuild every poll. */
+function structureKey(history) {
+  return history.map(m => m.role).join(',') + ':' + history.length;
+}
+
+let lastStructureKey = '';
+
+function rebuildPage(history) {
+  const page   = document.getElementById('page');
+  const wasBot = isAtBottom;
+
   if (!history.length) {
-    chat.innerHTML = `
-      <div id="empty" style="display:flex;flex-direction:column;align-items:center;
-           justify-content:center;height:100%;color:#484f58;gap:8px;">
-        <div class="icon">💬</div><div>Waiting for conversation history…</div>
-      </div>`;
+    page.innerHTML = '<div id="empty">Waiting for thought stream…</div>';
     return;
   }
 
-  const wasAtBottom = isAtBottom;
-  const rows = [];
+  let lastAsstIdx = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === 'assistant') { lastAsstIdx = i; break; }
+  }
 
-  history.forEach((msg, i) => {
-    if (msg.role !== 'user' && msg.role !== 'assistant') return;
-
-    const isUser   = msg.role === 'user';
-    const isLast   = i === history.length - 1;
-    const isEmpty  = !msg.content;
-    const isGenerating = isLast && msg.role === 'assistant' && isEmpty;
-
-    const uid = 'think-' + i;
-
-    // Content
-    let contentHtml;
-    if (isUser) {
-      const escaped = (msg.content || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      contentHtml = `<span>${escaped}</span>`;
-    } else {
-      const md = msg.content || '';
-      contentHtml = md ? marked.parse(md) : '';
+  const parts = [];
+  history.forEach((msg, idx) => {
+    if (msg.role === 'user') {
+      parts.push(`<div class="seed">${esc(msg.content || '')}</div>`);
+    } else if (msg.role === 'assistant') {
+      if (idx === lastAsstIdx) {
+        // Live slot — content is written by updateLiveElement(), not here.
+        parts.push(`<div id="live-thought" class="thought"></div>`);
+      } else {
+        const text = combinedText(msg);
+        if (text) parts.push(`<div class="thought">${paragraphs(text, false)}</div>`);
+      }
     }
-
-    // Generating cursor on last empty assistant message
-    const cursorClass = isGenerating ? ' generating' : '';
-
-    // Thinking block
-    const thinkingHtml = (!isUser && msg.thinking)
-      ? makeThinkingBlock(msg.thinking, uid)
-      : '';
-
-    // Meta
-    let metaHtml = '';
-    if (msg.tokens) {
-      metaHtml += `<span class="badge">${msg.tokens.toLocaleString()} tokens</span>`;
-    }
-    if (msg.finish_reason) {
-      const cls = msg.finish_reason === 'stop' ? 'stop'
-                : msg.finish_reason === 'length' ? 'length'
-                : 'interrupted';
-      metaHtml += `<span class="badge ${cls}">${msg.finish_reason}</span>`;
-    }
-
-    const avatarEmoji = isUser ? '🧑' : '🤖';
-
-    rows.push(`
-      <div class="msg-row ${msg.role}">
-        <div class="avatar">${avatarEmoji}</div>
-        <div class="bubble">
-          ${thinkingHtml}
-          <div class="bubble-inner${cursorClass}">${contentHtml}</div>
-          ${metaHtml ? `<div class="meta">${metaHtml}</div>` : ''}
-        </div>
-      </div>
-    `);
   });
 
-  chat.innerHTML = rows.join('');
+  page.innerHTML = parts.length
+    ? parts.join('')
+    : '<div id="empty">Waiting for thought stream…</div>';
 
-  // Re-run highlight.js on any pre>code blocks
-  chat.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
-
-  scrollToBottom(wasAtBottom);
+  if (wasBot) scroll.scrollTop = scroll.scrollHeight;
 }
 
-let fetchEpoch = 0;
+function render(history) {
+  const page = document.getElementById('page');
 
+  if (!history.length) {
+    page.innerHTML = '<div id="empty">Waiting for thought stream…</div>';
+    dot.className  = 'idle';
+    return;
+  }
+
+  // Rebuild the static DOM only when entries are added or removed.
+  const skey = structureKey(history);
+  if (skey !== lastStructureKey) {
+    lastStructureKey = skey;
+    rebuildPage(history);
+  }
+
+  // Update liveness indicator.
+  const lastMsg = history[history.length - 1];
+  liveIsLive    = lastMsg.role === 'assistant' && lastMsg.finish_reason === 'in_progress';
+  dot.className = liveIsLive ? '' : 'idle';
+
+  // Update typewriter target for the live entry.
+  let lastAsstIdx = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === 'assistant') { lastAsstIdx = i; break; }
+  }
+
+  let totalChars = 0;
+  history.forEach(m => { if (m.role === 'assistant') totalChars += combinedText(m).length; });
+  document.getElementById('char-count').textContent =
+    totalChars > 0 ? totalChars.toLocaleString() + ' chars' : '';
+
+  if (lastAsstIdx >= 0) {
+    const text = combinedText(history[lastAsstIdx]);
+    const key  = String(lastAsstIdx);
+    if (key !== lastEntryKey) {
+      // New live entry — reset the typewriter from zero.
+      displayedChars = 0;
+      lastEntryKey   = key;
+    }
+    if (text.length < displayedChars) displayedChars = text.length;
+    targetText = text;
+    kickAnimate();
+  }
+}
+
+// ── Poll loop ─────────────────────────────────────────────────────────────────
 async function poll() {
-  const epoch = ++fetchEpoch;
   try {
     const res = await fetch('/api/history', { cache: 'no-store' });
-    if (!res.ok) return;
-    const text = await res.text();
-    if (epoch !== fetchEpoch) return; // stale response, discard
-
-    // Only re-render if content changed
-    if (text !== lastHash) {
-      lastHash = text;
-      const history = JSON.parse(text);
-      renderMessages(history);
-      const n = history.length;
-      document.getElementById('msg-count').textContent =
-        n + ' message' + (n !== 1 ? 's' : '');
+    if (res.ok) {
+      const text = await res.text();
+      if (text !== lastHash) {
+        lastHash = text;
+        render(JSON.parse(text));
+      }
+      document.getElementById('last-update').textContent = timeAgo(Date.now());
     }
-    document.getElementById('last-update').textContent = timeAgo(Date.now());
-  } catch (e) {
-    // ignore network errors
-  }
+  } catch (_) {}
+  setTimeout(poll, __POLL_MS__);
 }
 
-// Poll interval set via --poll server argument
-setInterval(poll, __POLL_MS__);
 poll();
 
-// Update "last updated" timestamp every 5s
-setInterval(() => {
-  if (lastHash !== null) {
-    document.getElementById('last-update').textContent = timeAgo(Date.now());
-  }
-}, 5000);
 </script>
 </body>
 </html>
@@ -485,22 +410,31 @@ class Handler(BaseHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Read-only vLLM chat viewer")
-    parser.add_argument("--port", type=int, default=7000,
-                        help="Port to listen on (default: 7000)")
-    parser.add_argument("--history", default="gen_history/history.json",
-                        help="Path to history JSON file")
-    parser.add_argument("--poll", type=int, default=200,
-                        help="Browser poll interval in milliseconds (default: 200)")
+    parser.add_argument("--port", type=int, default=443,
+                        help="Port to listen on (default: 443)")
+    parser.add_argument("--cert", default="cert.pem",
+                        help="TLS certificate file (e.g. cert.pem) — enables HTTPS")
+    parser.add_argument("--key", default="key.pem",
+                        help="TLS private key file (e.g. key.pem)")
     args = parser.parse_args()
 
-    Handler.history_file = Path(args.history)
-    Handler.poll_ms = args.poll
+    Handler.history_file = Path("gen_history/stream.json")
+    Handler.poll_ms = 20
     if not Handler.history_file.exists():
         print(f"Warning: history file not found: {Handler.history_file}")
 
     addr = ("0.0.0.0", args.port)
     server = HTTPServer(addr, Handler)
-    print(f"Serving at http://localhost:{args.port}")
+
+    if args.cert and args.key:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=args.cert, keyfile=args.key)
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        proto = "https"
+    else:
+        proto = "http"
+
+    print(f"Serving at {proto}://0.0.0.0:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

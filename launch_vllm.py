@@ -62,6 +62,10 @@ class VLLMServer:
         if self.config.get('kv_cache_dtype'):
             cmd.extend(["--kv-cache-dtype", str(self.config['kv_cache_dtype'])])
         
+        # Prefix caching — reuses KV cache for repeated prompt prefixes
+        if self.config.get('enable_prefix_caching', False):
+            cmd.append("--enable-prefix-caching")
+
         # Additional arguments
         if self.config.get('additional_args'):
             cmd.extend(self.config['additional_args'])

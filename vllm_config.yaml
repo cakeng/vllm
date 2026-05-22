@@ -18,7 +18,7 @@ server:
 # Generation Parameters
 generation:
   temperature: 1.0
-  max_tokens: 65536
+  max_tokens: 16384
   top_p: 0.95
   top_k: 20
   repetition_penalty: 1.15
@@ -35,14 +35,14 @@ gpu:
   # This sets CUDA_VISIBLE_DEVICES environment variable
   gpu_ids: [0]
   # GPU memory utilization (0.0 to 1.0)
-  gpu_memory_utilization: 0.98
+  gpu_memory_utilization: 0.96
 
 # Tensor Parallelism (for multi-GPU)
 tensor_parallel_size: 1
 
 # Model Context Length
 # Maximum sequence length the model can handle
-max_model_len: 120000
+max_model_len: 32768
 # max_model_len: 202752
 max_num_seqs: 1
 
