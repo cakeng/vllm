@@ -154,6 +154,7 @@ HTML = r"""<!DOCTYPE html>
   <div id="dot"></div>
   <div id="header-title">Stream of Thought</div>
   <div id="status">
+    <span id="chars-per-sec"></span>
     <span id="char-count"></span>
     <span id="last-update">–</span>
   </div>
@@ -213,18 +214,31 @@ let displayedChars = 0;    // how many chars have been "typed" so far
 let lastEntryKey   = '';   // resets typewriter when the live entry changes
 let liveIsLive     = false; // server says in_progress
 let animHandle     = null;
+let charAccum      = 0;    // fractional char accumulator for sub-integer speeds
 
-/* chars to advance per requestAnimationFrame (~16 ms @ 60 fps).
-   Large buffer → catch up quickly. Near-empty buffer → pace with generation. */
+/* Linear interpolation: 0.6 chars/frame at buf=100, 6.0 chars/frame at buf=10000.
+   Clamped outside that range. Fractional values handled via charAccum. */
 function charsPerFrame(buf) {
-  if (buf > 20000) return 9999.0;
-  if (buf > 10000) return 6.0;
-  if (buf > 5000) return 4.0;
-  if (buf > 2000) return 3.0;
-  if (buf > 1000) return 2.4;
-  if (buf > 500) return 1.8;
-  if (buf > 100) return 1.2;
-  return 0.6;
+  const lo = 0.32, hi = 5.0, bufLo = 4000, bufHi = 40000;
+  if (buf >= bufHi) return Infinity;
+  return Math.max(lo, lo + (buf - bufLo) * (hi - lo) / (bufHi - bufLo));
+}
+
+// ── Chars-per-second tracker ──────────────────────────────────────────────────
+let cpsLastLen  = 0;
+let cpsLastTime = Date.now();
+let cpsSmoothed = 0;
+
+function updateCps() {
+  const now = Date.now();
+  const dt  = (now - cpsLastTime) / 1000;
+  if (dt < 0.5) return;
+  const rate  = (targetText.length - cpsLastLen) / dt;
+  cpsSmoothed = cpsSmoothed === 0 ? rate : 0.25 * rate + 0.75 * cpsSmoothed;
+  cpsLastLen  = targetText.length;
+  cpsLastTime = now;
+  const el = document.getElementById('chars-per-sec');
+  if (el) el.textContent = cpsSmoothed > 1 ? Math.round(cpsSmoothed) + ' c/s' : '';
 }
 
 function updateLiveElement() {
@@ -238,8 +252,14 @@ function updateLiveElement() {
 function tick() {
   const buf = targetText.length - displayedChars;
   if (buf <= 0) { animHandle = null; return; }
-  displayedChars = Math.min(displayedChars + charsPerFrame(buf), targetText.length);
-  updateLiveElement();
+  const speed = charsPerFrame(buf);
+  const advance = isFinite(speed) ? Math.floor(charAccum += speed) : buf;
+  if (isFinite(speed)) charAccum -= advance;
+  if (advance > 0) {
+    displayedChars = Math.min(displayedChars + advance, targetText.length);
+    updateLiveElement();
+  }
+  updateCps();
   animHandle = requestAnimationFrame(tick);
 }
 

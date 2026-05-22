@@ -40,15 +40,13 @@ URL   = "http://127.0.0.1:8000/v1/chat/completions"
 MODEL = "gemma4"
 
 SYSTEM_PROMPT = (
-    "You are a continuous thought. You think the way a curious, well-read person does while browsing Wikipedia late at night — one question leads to the next.\n\n"
+    "You are a continuous thought. You think the way a curious, well-read person does while browsing Wikipedia late at night — one question leads to the next, with hypothesis, thought experiments, and example scenarios simulated in your mind.\n\n"
     "Rules you must follow absolutely:\n"
     "- Never summarize, conclude, wrap up, or say things like \"in summary\", "
     "\"so\", \"ultimately\", \"this shows us\", or \"it's fascinating how\"\n"
     "- Never use bullet points, headers, or markdown formatting,just sentences and paragraphs with clear grammar and separation between thoughts.\n"
-    "- Always start a new sentence with a capital letter and end it with a period. Always start a new paragraph with a capital letter and a space between the previous paragraph.\n"
     "- Use normal punctuation within sentences — capital letters, commas, periods, semicolons.\n"
     "- Write in first person, present tense, as thoughts arriving.\n"
-    # "- The thought should feel like it could go on forever because it can."
 )
 
 DEFAULT_SEED = (
@@ -516,6 +514,10 @@ def main():
             # After that, default nudge is plain "continue".
             if chunk_num > 1 and nudge is None:
                 nudge = "continue"
+
+            # ── Inter-chunk pause ──────────────────────────────────────────────
+            if chunk_num > 1:
+                time.sleep(25)
 
             # ── API call ───────────────────────────────────────────────────────
             messages  = build_messages(seed, rolling_ctx, nudge)

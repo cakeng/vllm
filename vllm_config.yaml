@@ -2,8 +2,8 @@
 # Model configuration - can be overridden by MODEL_NAME environment variable
 model:
   # Model name or path (e.g., "Qwen/Qwen3-Next-80B-A3B-Thinking-FP8" or local path)
-  name: "google/gemma-4-E2B-it"
-  # name: "google/gemma-4-E4B"
+  # name: "google/gemma-4-E2B-it"
+  name: "prithivMLmods/gemma-4-E2B-it-Uncensored-MAX"
   # name: "meta-llama/Meta-Llama-3.1-8B"
   
   # Trust remote code (required for some models)
@@ -18,7 +18,7 @@ server:
 # Generation Parameters
 generation:
   temperature: 1.0
-  max_tokens: 16384
+  max_tokens: 48000
   top_p: 0.95
   top_k: 20
   repetition_penalty: 1.15
@@ -35,16 +35,16 @@ gpu:
   # This sets CUDA_VISIBLE_DEVICES environment variable
   gpu_ids: [0]
   # GPU memory utilization (0.0 to 1.0)
-  gpu_memory_utilization: 0.96
+  gpu_memory_utilization: 0.98
 
 # Tensor Parallelism (for multi-GPU)
 tensor_parallel_size: 1
 
 # Model Context Length
 # Maximum sequence length the model can handle
-max_model_len: 32768
+max_model_len: 65536
 # max_model_len: 202752
-max_num_seqs: 1
+max_num_seqs: 3
 
 # KV Cache Configuration
 # Data type for key-value cache (fp8, fp16, etc.)
@@ -55,16 +55,10 @@ kv_cache_dtype: "auto"
 additional_args:
   - "--reasoning-parser"
   - "gemma4"
-  - "--language-model-only"
+  # - "--language-model-only"
   - "--chat-template"
   - "examples/tool_chat_template_gemma4.jinja"
   - "--served-model-name"
   - "gemma4"
   # - "--speculative-config"
   # - '{"model": "google/gemma-4-E4B-it-assistant", "num_speculative_tokens": 1}'
-
-# additional_args:
-#   - "--chat-template"
-#   - "examples/tool_chat_template_llama3.1_json.jinja"
-#   - "--served-model-name"
-#   - "gemma4"
