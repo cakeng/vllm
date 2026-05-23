@@ -219,7 +219,7 @@ let charAccum      = 0;    // fractional char accumulator for sub-integer speeds
 /* Linear interpolation: 0.6 chars/frame at buf=100, 6.0 chars/frame at buf=10000.
    Clamped outside that range. Fractional values handled via charAccum. */
 function charsPerFrame(buf) {
-  const lo = 0.32, hi = 5.0, bufLo = 4000, bufHi = 40000;
+  const lo = 0.25, hi = 5.0, bufLo = 5000, bufHi = 10000;
   if (buf >= bufHi) return Infinity;
   return Math.max(lo, lo + (buf - bufLo) * (hi - lo) / (bufHi - bufLo));
 }
@@ -430,6 +430,7 @@ class Handler(BaseHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Read-only vLLM chat viewer")
+    parser.add_argument("history", help="Path to the chat history JSON file")
     parser.add_argument("--port", type=int, default=443,
                         help="Port to listen on (default: 443)")
     parser.add_argument("--cert", default="cert.pem",
@@ -438,7 +439,7 @@ def main():
                         help="TLS private key file (e.g. key.pem)")
     args = parser.parse_args()
 
-    Handler.history_file = Path("gen_history/stream.json")
+    Handler.history_file = Path(args.history)
     Handler.poll_ms = 20
     if not Handler.history_file.exists():
         print(f"Warning: history file not found: {Handler.history_file}")
