@@ -129,10 +129,22 @@ HTML = r"""<!DOCTYPE html>
     line-height: 1.84;
   }
 
+  .chunk-num {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    color: #9e9488;
+    flex-shrink: 0;
+    min-width: 2.4em;
+    text-align: right;
+    line-height: 1.55;
+    letter-spacing: 0.03em;
+  }
+
   .chunk-summary {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     font-size: 15px;
-    color: #4a3f30;
+    color: #1c1a17;
     line-height: 1.55;
     flex: 1;
   }
@@ -314,14 +326,17 @@ function toggleChunk(cnum) {
   if (!row) return;
   const body = row.querySelector('.chunk-body');
   const icon = row.querySelector('.chunk-icon');
+  const num  = row.querySelector('.chunk-num');
   if (expandedChunks.has(cnum)) {
     expandedChunks.delete(cnum);
     body.classList.remove('open');
     icon.textContent = '▸';
+    if (num) num.textContent = '#' + cnum;
   } else {
     expandedChunks.add(cnum);
     body.classList.add('open');
     icon.textContent = '▾';
+    if (num) num.textContent = '';
   }
 }
 
@@ -377,6 +392,7 @@ function rebuildPage(history) {
       <div class="chunk" data-chunk="${cnum}">
         <div class="chunk-header" onclick="toggleChunk(${cnum})">
           <span class="chunk-icon">${expanded ? '▾' : '▸'}</span>
+          <span class="chunk-num">${expanded ? '' : '#' + cnum}</span>
           <span class="chunk-summary">${summaryHtml}</span>
         </div>
         <div class="chunk-body${expanded ? ' open' : ''}">
