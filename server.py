@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Read-only web viewer for gen_history/history.json.
-Displays the conversation as a single flowing stream of thought.
+Read-only web viewer for gen_history/stream.json.
+Displays each chunk as a one-sentence summary; click to expand full thinking.
 
 Usage:
-    python server.py [--port 7000] [--history gen_history/history.json]
+    python server.py <history.json> [--port 443] [--cert cert.pem] [--key key.pem]
 """
 
 import json
@@ -82,12 +82,12 @@ HTML = r"""<!DOCTYPE html>
   #scroll {
     flex: 1;
     overflow-y: auto;
-    padding: 64px 0 96px;
+    padding: 48px 0 96px;
   }
 
   /* ── Reading column ── */
   #page {
-    max-width: 680px;
+    max-width: 720px;
     margin: 0 auto;
     padding: 0 32px;
   }
@@ -100,30 +100,44 @@ HTML = r"""<!DOCTYPE html>
     color: #9e9488;
     border-left: 2px solid #cec8bf;
     padding: 2px 0 2px 14px;
-    margin: 52px 0 36px;
+    margin: 0 0 32px;
     line-height: 1.55;
   }
-  .seed:first-child { margin-top: 0; }
 
-  /* ── Thought paragraphs ── */
-  .thought p {
-    margin-bottom: 1.5em;
-    hyphens: auto;
+  /* ── Chunk row ── */
+  .chunk {
+    margin: 0;
+    border-bottom: 1px solid #ede8e1;
   }
-  .thought p:last-child { margin-bottom: 0; }
+  .chunk:first-of-type { border-top: 1px solid #ede8e1; }
 
-  /* ── Injection marker (Wikipedia pivot) ── */
-  .pivot {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    font-size: 12px;
+  .chunk-header {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 14px 0;
+    cursor: pointer;
+    user-select: none;
+  }
+  .chunk-header:hover .chunk-summary { color: #1c1a17; }
+
+  .chunk-icon {
+    font-size: 11px;
     color: #b0a898;
-    font-style: italic;
-    margin: 2em 0 1.6em;
-    padding-left: 14px;
-    border-left: 2px solid #e0dbd3;
+    flex-shrink: 0;
+    width: 12px;
+    line-height: 1.84;
   }
 
-  /* ── Generating cursor ── */
+  .chunk-summary {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 15px;
+    color: #4a3f30;
+    line-height: 1.55;
+    flex: 1;
+  }
+
+  /* ── Typewriter cursor on animating summary ── */
   .cursor::after {
     content: '▋';
     display: inline;
@@ -131,6 +145,40 @@ HTML = r"""<!DOCTYPE html>
     animation: blink 0.95s steps(1) infinite;
   }
   @keyframes blink { 50% { opacity: 0; } }
+
+  /* ── Expanded thinking body ── */
+  .chunk-body {
+    display: none;
+    padding: 4px 0 24px 22px;
+    border-left: 2px solid #e0dbd3;
+    margin-left: 0;
+  }
+  .chunk-body.open { display: block; }
+
+  .thought p {
+    margin-bottom: 1.4em;
+    hyphens: auto;
+    color: #2e2a24;
+  }
+  .thought p:last-child { margin-bottom: 0; }
+
+  /* ── In-progress spinner row ── */
+  .chunk.in-progress .chunk-header { cursor: default; }
+
+  .chunk-spinner {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #82b366;
+    flex-shrink: 0;
+    animation: pulse 1.4s infinite;
+  }
+  .chunk-thinking-label {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 13px;
+    color: #9e9488;
+    font-style: italic;
+  }
 
   /* ── Empty state ── */
   #empty {
@@ -167,8 +215,24 @@ HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
-let lastHash   = null;
-let isAtBottom = true;
+// ── State ─────────────────────────────────────────────────────────────────────
+let lastHash         = null;
+let isAtBottom       = true;
+let lastStructureKey = '';
+let expandedChunks   = new Set();   // chunk numbers currently expanded
+let animatingChunk   = -1;          // chunk number whose summary is animating
+let lastSummaryCount = 0;           // detect when a new summary arrives
+
+// ── Typewriter ────────────────────────────────────────────────────────────────
+let targetText     = '';
+let displayedChars = 0;
+let charAccum      = 0;
+let animHandle     = null;
+
+// ── CPS tracker ───────────────────────────────────────────────────────────────
+let cpsLastLen  = 0;
+let cpsLastTime = Date.now();
+let cpsSmoothed = 0;
 
 const scroll = document.getElementById('scroll');
 const dot    = document.getElementById('dot');
@@ -177,6 +241,7 @@ scroll.addEventListener('scroll', () => {
   isAtBottom = scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 80;
 });
 
+// ── Utilities ─────────────────────────────────────────────────────────────────
 function timeAgo(ms) {
   const s = Math.floor((Date.now() - ms) / 1000);
   if (s < 5)  return 'live';
@@ -185,49 +250,23 @@ function timeAgo(ms) {
 }
 
 function esc(t) {
-  return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(t)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
-/* Render text as flowing paragraphs. Double-newlines → <p> breaks.
-   Pivot markers ([→ ...]) get lighter styling.
-   showCursor appends a blinking cursor to the last paragraph. */
-function paragraphs(text, showCursor) {
-  const chunks = text.split(/\n\n+/).map(p => p.replace(/\n/g,' ').trim()).filter(Boolean);
-  if (!chunks.length) return showCursor ? '<p><span class="cursor"></span></p>' : '';
-  return chunks.map((p, i) => {
-    const last = i === chunks.length - 1;
-    const cur  = (showCursor && last) ? '<span class="cursor"></span>' : '';
-    if (/^\[→/.test(p)) return `<div class="pivot">${esc(p)}${cur}</div>`;
-    return `<p>${esc(p)}${cur}</p>`;
-  }).join('');
+function paragraphs(text) {
+  const chunks = text.split(/\n\n+/).map(p => p.replace(/\n/g, ' ').trim()).filter(Boolean);
+  return chunks.map(p => `<p>${esc(p)}</p>`).join('');
 }
 
-function combinedText(msg) {
-  const t = (msg.thinking || '').trim();
-  const c = (msg.content  || '').trim();
-  return t + (t && c ? '\n\n' : '') + c;
-}
-
-// ── Typewriter ────────────────────────────────────────────────────────────────
-let targetText     = '';   // full server-side text for the live entry
-let displayedChars = 0;    // how many chars have been "typed" so far
-let lastEntryKey   = '';   // resets typewriter when the live entry changes
-let liveIsLive     = false; // server says in_progress
-let animHandle     = null;
-let charAccum      = 0;    // fractional char accumulator for sub-integer speeds
-
-/* Linear interpolation: 0.6 chars/frame at buf=100, 6.0 chars/frame at buf=10000.
-   Clamped outside that range. Fractional values handled via charAccum. */
+// ── Typewriter animation (targets the animating summary span) ─────────────────
 function charsPerFrame(buf) {
-  const lo = 0.25, hi = 5.0, bufLo = 5000, bufHi = 10000;
+  const lo = 0.6, hi = 6.0, bufLo = 20, bufHi = 200;
   if (buf >= bufHi) return Infinity;
   return Math.max(lo, lo + (buf - bufLo) * (hi - lo) / (bufHi - bufLo));
 }
-
-// ── Chars-per-second tracker ──────────────────────────────────────────────────
-let cpsLastLen  = 0;
-let cpsLastTime = Date.now();
-let cpsSmoothed = 0;
 
 function updateCps() {
   const now = Date.now();
@@ -238,26 +277,27 @@ function updateCps() {
   cpsLastLen  = targetText.length;
   cpsLastTime = now;
   const el = document.getElementById('chars-per-sec');
-  if (el) el.textContent = cpsSmoothed > 1 ? Math.round(cpsSmoothed) + ' c/s' : '';
+  if (el) el.textContent = cpsSmoothed > 0.5 ? Math.round(cpsSmoothed) + ' c/s' : '';
 }
 
-function updateLiveElement() {
-  const el = document.getElementById('live-thought');
+function updateSummaryElement() {
+  const el = document.getElementById('live-summary');
   if (!el) return;
-  const showCursor = liveIsLive || displayedChars < targetText.length;
-  el.innerHTML = paragraphs(targetText.slice(0, displayedChars), showCursor);
+  const done = displayedChars >= targetText.length;
+  el.innerHTML = esc(targetText.slice(0, displayedChars)) +
+    (done ? '' : '<span class="cursor"></span>');
   if (isAtBottom) scroll.scrollTop = scroll.scrollHeight;
 }
 
 function tick() {
   const buf = targetText.length - displayedChars;
   if (buf <= 0) { animHandle = null; return; }
-  const speed = charsPerFrame(buf);
+  const speed   = charsPerFrame(buf);
   const advance = isFinite(speed) ? Math.floor(charAccum += speed) : buf;
   if (isFinite(speed)) charAccum -= advance;
   if (advance > 0) {
     displayedChars = Math.min(displayedChars + advance, targetText.length);
-    updateLiveElement();
+    updateSummaryElement();
   }
   updateCps();
   animHandle = requestAnimationFrame(tick);
@@ -268,15 +308,29 @@ function kickAnimate() {
     animHandle = requestAnimationFrame(tick);
 }
 
-// ── Rendering ─────────────────────────────────────────────────────────────────
-
-/* Fingerprint of history shape — changes only when entries are added/removed,
-   not when the last entry's text grows. Prevents full DOM rebuild every poll. */
-function structureKey(history) {
-  return history.map(m => m.role).join(',') + ':' + history.length;
+// ── Expand / collapse ─────────────────────────────────────────────────────────
+function toggleChunk(cnum) {
+  const row  = document.querySelector(`.chunk[data-chunk="${cnum}"]`);
+  if (!row) return;
+  const body = row.querySelector('.chunk-body');
+  const icon = row.querySelector('.chunk-icon');
+  if (expandedChunks.has(cnum)) {
+    expandedChunks.delete(cnum);
+    body.classList.remove('open');
+    icon.textContent = '▸';
+  } else {
+    expandedChunks.add(cnum);
+    body.classList.add('open');
+    icon.textContent = '▾';
+  }
 }
 
-let lastStructureKey = '';
+// ── Page rendering ────────────────────────────────────────────────────────────
+function structureKey(history) {
+  const chunks   = history.filter(m => m.role === 'chunk');
+  const summaries = chunks.filter(m => m.summary !== null && m.summary !== undefined).length;
+  return chunks.length + ':' + summaries;
+}
 
 function rebuildPage(history) {
   const page   = document.getElementById('page');
@@ -287,24 +341,48 @@ function rebuildPage(history) {
     return;
   }
 
-  let lastAsstIdx = -1;
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i].role === 'assistant') { lastAsstIdx = i; break; }
-  }
-
   const parts = [];
-  history.forEach((msg, idx) => {
+
+  history.forEach(msg => {
     if (msg.role === 'user') {
       parts.push(`<div class="seed">${esc(msg.content || '')}</div>`);
-    } else if (msg.role === 'assistant') {
-      if (idx === lastAsstIdx) {
-        // Live slot — content is written by updateLiveElement(), not here.
-        parts.push(`<div id="live-thought" class="thought"></div>`);
-      } else {
-        const text = combinedText(msg);
-        if (text) parts.push(`<div class="thought">${paragraphs(text, false)}</div>`);
-      }
+      return;
     }
+
+    if (msg.role !== 'chunk') return;
+
+    const cnum     = msg.chunk;
+    const hasSummary = msg.summary !== null && msg.summary !== undefined;
+
+    if (!hasSummary) {
+      // In-progress: spinner row
+      parts.push(`
+        <div class="chunk in-progress" data-chunk="${cnum}">
+          <div class="chunk-header">
+            <span class="chunk-spinner"></span>
+            <span class="chunk-thinking-label">thinking…</span>
+          </div>
+        </div>`);
+      return;
+    }
+
+    // Completed chunk
+    const isAnimating = cnum === animatingChunk;
+    const expanded    = expandedChunks.has(cnum);
+    const summaryHtml = isAnimating
+      ? `<span id="live-summary"></span>`
+      : esc(msg.summary);
+
+    parts.push(`
+      <div class="chunk" data-chunk="${cnum}">
+        <div class="chunk-header" onclick="toggleChunk(${cnum})">
+          <span class="chunk-icon">${expanded ? '▾' : '▸'}</span>
+          <span class="chunk-summary">${summaryHtml}</span>
+        </div>
+        <div class="chunk-body${expanded ? ' open' : ''}">
+          <div class="thought">${paragraphs(msg.thinking || '')}</div>
+        </div>
+      </div>`);
   });
 
   page.innerHTML = parts.length
@@ -323,41 +401,40 @@ function render(history) {
     return;
   }
 
-  // Rebuild the static DOM only when entries are added or removed.
+  const chunks    = history.filter(m => m.role === 'chunk');
+  const completed = chunks.filter(m => m.summary !== null && m.summary !== undefined);
+  const summaryCount = completed.length;
+
+  // Detect a newly appeared summary → arm the typewriter before rebuilding.
+  if (summaryCount > lastSummaryCount && completed.length > 0) {
+    const latest    = completed[completed.length - 1];
+    animatingChunk  = latest.chunk;
+    targetText      = latest.summary || '';
+    displayedChars  = 0;
+    charAccum       = 0;
+    lastSummaryCount = summaryCount;
+  }
+
+  // Rebuild DOM when structure changes (chunk added or summary appeared).
   const skey = structureKey(history);
   if (skey !== lastStructureKey) {
     lastStructureKey = skey;
     rebuildPage(history);
   }
 
-  // Update liveness indicator.
-  const lastMsg = history[history.length - 1];
-  liveIsLive    = lastMsg.role === 'assistant' && lastMsg.finish_reason === 'in_progress';
-  dot.className = liveIsLive ? '' : 'idle';
+  // Liveness dot: green while the last chunk has no summary yet.
+  const lastChunk = chunks[chunks.length - 1];
+  const isLive    = lastChunk &&
+    (lastChunk.summary === null || lastChunk.summary === undefined);
+  dot.className   = isLive ? '' : 'idle';
 
-  // Update typewriter target for the live entry.
-  let lastAsstIdx = -1;
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i].role === 'assistant') { lastAsstIdx = i; break; }
-  }
-
+  // Char count (total thinking chars generated).
   let totalChars = 0;
-  history.forEach(m => { if (m.role === 'assistant') totalChars += combinedText(m).length; });
+  chunks.forEach(c => { totalChars += (c.thinking || '').length; });
   document.getElementById('char-count').textContent =
     totalChars > 0 ? totalChars.toLocaleString() + ' chars' : '';
 
-  if (lastAsstIdx >= 0) {
-    const text = combinedText(history[lastAsstIdx]);
-    const key  = String(lastAsstIdx);
-    if (key !== lastEntryKey) {
-      // New live entry — reset the typewriter from zero.
-      displayedChars = 0;
-      lastEntryKey   = key;
-    }
-    if (text.length < displayedChars) displayedChars = text.length;
-    targetText = text;
-    kickAnimate();
-  }
+  kickAnimate();
 }
 
 // ── Poll loop ─────────────────────────────────────────────────────────────────
@@ -377,7 +454,6 @@ async function poll() {
 }
 
 poll();
-
 </script>
 </body>
 </html>
@@ -429,14 +505,14 @@ class Handler(BaseHTTPRequestHandler):
 # Entry point
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Read-only vLLM chat viewer")
-    parser.add_argument("history", help="Path to the chat history JSON file")
+    parser = argparse.ArgumentParser(description="Read-only vLLM stream viewer")
+    parser.add_argument("history", help="Path to the stream history JSON file")
     parser.add_argument("--port", type=int, default=443,
                         help="Port to listen on (default: 443)")
     parser.add_argument("--cert", default="cert.pem",
-                        help="TLS certificate file (e.g. cert.pem) — enables HTTPS")
+                        help="TLS certificate file — enables HTTPS")
     parser.add_argument("--key", default="key.pem",
-                        help="TLS private key file (e.g. key.pem)")
+                        help="TLS private key file")
     args = parser.parse_args()
 
     Handler.history_file = Path(args.history)
@@ -444,7 +520,7 @@ def main():
     if not Handler.history_file.exists():
         print(f"Warning: history file not found: {Handler.history_file}")
 
-    addr = ("0.0.0.0", args.port)
+    addr   = ("0.0.0.0", args.port)
     server = HTTPServer(addr, Handler)
 
     if args.cert and args.key:
