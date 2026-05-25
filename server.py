@@ -486,32 +486,36 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
 
-        if path == "/":
-            page = HTML.replace("__POLL_MS__", str(self.poll_ms))
-            body = page.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+        try:
+            if path == "/":
+                page = HTML.replace("__POLL_MS__", str(self.poll_ms))
+                body = page.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
-        elif path == "/api/history":
-            try:
-                raw = self.history_file.read_text(encoding="utf-8")
-                json.loads(raw)          # validate — raise if corrupt
-            except Exception:
-                raw = "[]"
-            body = raw.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+            elif path == "/api/history":
+                try:
+                    raw = self.history_file.read_text(encoding="utf-8")
+                    json.loads(raw)          # validate — raise if corrupt
+                except Exception:
+                    raw = "[]"
+                body = raw.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
 
-        else:
-            self.send_response(404)
-            self.end_headers()
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        except (ssl.SSLEOFError, BrokenPipeError, ConnectionResetError):
+            pass  # client disconnected early (e.g. scanner probe), ignore
 
     def log_message(self, fmt, *args):
         pass  # suppress per-request logs

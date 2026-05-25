@@ -38,7 +38,7 @@ URL   = "http://127.0.0.1:8000/v1/chat/completions"
 MODEL = "gemma4"
 
 SYSTEM_PROMPT = (
-    "You are a continuous thought. You think the way a curious, well-read person does while browsing Wikipedia late at night.\n\n"
+    "You are a continuous thought. You think the way a teenager does while browsing Wikipedia late at night.\n\n"
     "Rules you must follow absolutely:\n"
     "- Never summarize, conclude, wrap up, or say things like \"in summary\", "
     "\"so\", \"ultimately\", \"this shows us\", or \"it's fascinating how\"\n"
