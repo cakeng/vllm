@@ -18,8 +18,8 @@ Usage:
     python stream_loop.py [options]
 
 Key options:
-    --url URL            vLLM base URL            (default: https://127.0.0.1:61800/v1/chat/completions)
-    --model NAME         Model name               (default: gemma4)
+    --url URL            vLLM base URL            (default: https://127.0.0.1:18000/v1/chat/completions)
+    --model NAME         Model name               (default: google/gemma-4-E2B-it)
     --api-key KEY        Bearer token for auth    (default: none)
     --seed TEXT          Opening thought (default: built-in)
     --chunks N           Max generation chunks (0 = unlimited, Ctrl+C to stop)
@@ -38,8 +38,8 @@ import urllib3
 from pathlib import Path
 
 # Populated in main() from CLI args; module-level so helpers can read them.
-URL        = "https://127.0.0.1:61800/v1/chat/completions"
-MODEL      = "gemma4"
+URL        = "https://127.0.0.1:18000/v1/chat/completions"
+MODEL      = "google/gemma-4-E2B-it"
 HEADERS: dict = {}
 SSL_VERIFY = False
 
@@ -302,10 +302,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--url", default="https://127.0.0.1:61800/v1/chat/completions",
-                        help="vLLM completions endpoint (default: https://127.0.0.1:61800/v1/chat/completions)")
-    parser.add_argument("--model", default="gemma4",
-                        help="Model name (default: gemma4)")
+    parser.add_argument("--url", default="https://127.0.0.1:18000/v1/chat/completions",
+                        help="vLLM completions endpoint (default: https://127.0.0.1:18000/v1/chat/completions)")
+    parser.add_argument("--model", default="google/gemma-4-E2B-it",
+                        help="Model name (default: google/gemma-4-E2B-it)")
     parser.add_argument("--api-key", default="", dest="api_key",
                         help="Bearer token for API authentication (default: none)")
     parser.add_argument("--seed", default=DEFAULT_SEED,

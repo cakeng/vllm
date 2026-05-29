@@ -21,22 +21,13 @@ except ImportError:
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Populated in main() from CLI args.
-URL     = "https://127.0.0.1:61800/v1/chat/completions"
-MODEL   = "gemma4"
-HEADERS: dict = {}
+URL     = "http://127.0.0.1:18000/v1/chat/completions"
+MODEL   = "google/gemma-4-E2B-it"
 SSL_VERIFY = False
 
 CONTEXT_WINDOW = 96_000      # history budget = 128k - 32k generation headroom
 
-SYSTEM_PROMPT = """You are a stream of continuous thought. You think the way a curious, well-read person does while browsing Wikipedia late at night — one idea leads to the next, associations spark mid-sentence, you never reach a conclusion because there is no conclusion. 
-
-Rules you must follow absolutely:
-- Never summarize, conclude, wrap up, or say things like "in summary", "so", "ultimately", "this shows us", or "it's fascinating how"
-- Never use bullet points, headers, or structured formatting of any kind
-- Always end mid-thought or mid-association — never end a paragraph cleanly
-- Write in first person, present tense, as thoughts arriving
-- Every paragraph should transition into a new tangent before the previous thought is fully resolved
-- The thought should feel like it could go on forever because it can"""
+SYSTEM_PROMPT = """You are a helpful assistant."""
 
 
 def print_colored(msg, color=None):
@@ -82,7 +73,7 @@ def chat(messages, verbose=False, on_chunk=None, on_thinking_chunk=None, on_thin
     response = requests.post(URL, json=payload, headers=HEADERS, stream=True, verify=SSL_VERIFY)
     if response.status_code != 200:
         print("Error: HTTP %d: %s\n" % (response.status_code, response.text))
-        return "", payload, {}, None
+        return "", "", {}, None
 
     content_parts = []
     reasoning_parts = []
@@ -269,10 +260,10 @@ def main():
     global URL, MODEL, HEADERS, SSL_VERIFY
 
     parser = argparse.ArgumentParser(description="vLLM Chat Client")
-    parser.add_argument("--url", default="https://127.0.0.1:61800/v1/chat/completions",
-                        help="vLLM completions endpoint (default: https://127.0.0.1:61800/v1/chat/completions)")
-    parser.add_argument("--model", default="gemma4",
-                        help="Model name (default: gemma4)")
+    parser.add_argument("--url", default="http://127.0.0.1:18000/v1/chat/completions",
+                        help="vLLM completions endpoint (default: http://127.0.0.1:18000/v1/chat/completions)")
+    parser.add_argument("--model", default="google/gemma-4-E2B-it",
+                        help="Model name (default: google/gemma-4-E2B-it)")
     parser.add_argument("--api-key", default="", dest="api_key",
                         help="Bearer token for API authentication (default: none)")
     parser.add_argument("--continue", dest="continue_chat", action="store_true",
