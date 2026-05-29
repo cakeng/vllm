@@ -24,7 +24,10 @@ class VLLMServer:
         """
         self.config = config
         self.process: Optional[subprocess.Popen] = None
-        self.base_url = f"http://{self.config['server']['host']}:{self.config['server']['port']}"
+        _ssl = bool(config.get('server', {}).get('ssl_certfile'))
+        _scheme = "https" if _ssl else "http"
+        self.base_url = f"{_scheme}://{self.config['server']['host']}:{self.config['server']['port']}"
+        self.ssl_verify = False if _ssl else True
         
     def _build_vllm_command(self) -> list:
         """Build the command to start vLLM server."""
@@ -65,6 +68,16 @@ class VLLMServer:
         # Prefix caching — reuses KV cache for repeated prompt prefixes
         if self.config.get('enable_prefix_caching', False):
             cmd.append("--enable-prefix-caching")
+
+        # API key authentication
+        if self.config['server'].get('api_key'):
+            cmd.extend(["--api-key", self.config['server']['api_key']])
+
+        # TLS
+        if self.config['server'].get('ssl_certfile'):
+            cmd.extend(["--ssl-certfile", self.config['server']['ssl_certfile']])
+        if self.config['server'].get('ssl_keyfile'):
+            cmd.extend(["--ssl-keyfile", self.config['server']['ssl_keyfile']])
 
         # Additional arguments
         if self.config.get('additional_args'):
@@ -133,7 +146,7 @@ class VLLMServer:
         """Check if the vLLM server is running.
         """
         try:
-            response = requests.get(f"{self.base_url}/health", timeout=5)
+            response = requests.get(f"{self.base_url}/health", timeout=5, verify=self.ssl_verify)
             return response.status_code == 200
         except requests.exceptions.RequestException:
             return False

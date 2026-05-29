@@ -31,14 +31,30 @@ import json
 import time
 import argparse
 import requests
+import yaml
 from pathlib import Path
 
 # ── Server / model ─────────────────────────────────────────────────────────────
-URL   = "http://127.0.0.1:8000/v1/chat/completions"
-MODEL = "gemma4"
+_cfg   = yaml.safe_load(Path("vllm_config.yaml").read_text())
+_host  = _cfg.get("server", {}).get("host", "127.0.0.1")
+_port  = _cfg.get("server", {}).get("port", 61800)
+_key   = _cfg.get("server", {}).get("api_key", "")
+_ssl   = bool(_cfg.get("server", {}).get("ssl_certfile"))
+_scheme = "https" if _ssl else "http"
+_connect_host = "127.0.0.1" if _host == "0.0.0.0" else _host
+URL    = f"{_scheme}://{_connect_host}:{_port}/v1/chat/completions"
+_extra = _cfg.get("additional_args", [])
+_served_idx = _extra.index("--served-model-name") if "--served-model-name" in _extra else -1
+MODEL  = _extra[_served_idx + 1] if _served_idx >= 0 else _cfg.get("model", {}).get("name", "gemma4")
+HEADERS = {"Authorization": f"Bearer {_key}"} if _key else {}
+# Self-signed cert: disable verification warnings for local use
+SSL_VERIFY = False if _ssl else True
+if _ssl:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SYSTEM_PROMPT = (
-    "You are a continuous thought. You think the way a teenager does while browsing Wikipedia late at night.\n\n"
+    "You are a continuous thought. You think the way a curious, well-read person does while browsing Wikipedia late at night.\n\n"
     "Rules you must follow absolutely:\n"
     "- Never summarize, conclude, wrap up, or say things like \"in summary\", "
     "\"so\", \"ultimately\", \"this shows us\", or \"it's fascinating how\"\n"
@@ -154,7 +170,7 @@ def generate_chunk(
         **GEN_PARAMS,
     }
     try:
-        resp = requests.post(URL, json=payload, stream=True, timeout=180)
+        resp = requests.post(URL, json=payload, headers=HEADERS, stream=True, timeout=180, verify=SSL_VERIFY)
     except requests.RequestException as exc:
         _p(_RED, f"\n[API error: {exc}]")
         return "", "", "error"
@@ -266,7 +282,7 @@ def summarize_chunk(rolling_ctx: str, chunk_text: str) -> str:
         "top_p":       0.9,
     }
     try:
-        resp = requests.post(URL, json=payload, timeout=60)
+        resp = requests.post(URL, json=payload, headers=HEADERS, timeout=60, verify=SSL_VERIFY)
         if resp.status_code == 200:
             data    = resp.json()
             msg     = data["choices"][0]["message"]

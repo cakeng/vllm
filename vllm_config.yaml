@@ -2,8 +2,8 @@
 # Model configuration - can be overridden by MODEL_NAME environment variable
 model:
   # Model name or path (e.g., "Qwen/Qwen3-Next-80B-A3B-Thinking-FP8" or local path)
-  # name: "google/gemma-4-E2B-it"
-  name: "prithivMLmods/gemma-4-E2B-it-Uncensored-MAX"
+  name: "google/gemma-4-E2B-it"
+  # name: "prithivMLmods/gemma-4-E2B-it-Uncensored-MAX"
   # name: "meta-llama/Meta-Llama-3.1-8B"
   
   # Trust remote code (required for some models)
@@ -21,8 +21,9 @@ generation:
   max_tokens: 65536
   top_p: 0.95
   top_k: 50
-  repetition_penalty: 1.15
-  presence_penalty: 1.5
+  frequency_penalty: 0.1
+  repetition_penalty: 1.1
+  presence_penalty: 0.3
 
 # When true, allows Qwen3.5 VL checkpoints that only ship language weights (no
 # model.visual.* tensors). Vision stays randomly initialized — use text-only.
@@ -55,8 +56,6 @@ kv_cache_dtype: "auto"
 additional_args:
   - "--reasoning-parser"
   - "gemma4"
-  - "--chat-template"
-  - "examples/tool_chat_template_gemma4.jinja"
   - "--served-model-name"
   - "gemma4"
   # - "--speculative-config"
