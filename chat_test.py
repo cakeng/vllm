@@ -8,6 +8,7 @@ import requests
 import json
 import sys
 import argparse
+import urllib3
 from pathlib import Path
 
 try:
@@ -17,14 +18,15 @@ except ImportError:
     HAS_PROMPT_TOOLKIT = False
     import readline
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-URL = "http://127.0.0.1:8000/v1/chat/completions"
-MODEL = "gemma4"
-API_KEY = ""
+# Populated in main() from CLI args.
+URL     = "https://127.0.0.1:61800/v1/chat/completions"
+MODEL   = "gemma4"
+HEADERS: dict = {}
+SSL_VERIFY = False
 
 CONTEXT_WINDOW = 96_000      # history budget = 128k - 32k generation headroom
-
-HEADERS = {"Authorization": f"Bearer {API_KEY}"} if API_KEY else {}
 
 SYSTEM_PROMPT = """You are a stream of continuous thought. You think the way a curious, well-read person does while browsing Wikipedia late at night — one idea leads to the next, associations spark mid-sentence, you never reach a conclusion because there is no conclusion. 
 
@@ -77,7 +79,7 @@ def chat(messages, verbose=False, on_chunk=None, on_thinking_chunk=None, on_thin
     if no_eos:
         # Gemma4 stop tokens: 1=<eos>, 105=<|turn|>, 106=<turn|>
         payload["logit_bias"] = {"1": -100, "101": -100, "105": -100, "106": -100}
-    response = requests.post(URL, json=payload, headers=HEADERS, stream=True)
+    response = requests.post(URL, json=payload, headers=HEADERS, stream=True, verify=SSL_VERIFY)
     if response.status_code != 200:
         print("Error: HTTP %d: %s\n" % (response.status_code, response.text))
         return "", payload, {}, None
@@ -199,6 +201,7 @@ def count_tokens(text):
             json={"model": MODEL, "prompt": text},
             headers=HEADERS,
             timeout=5,
+            verify=SSL_VERIFY,
         )
         if r.status_code == 200:
             return r.json().get("count", 0)
@@ -263,7 +266,15 @@ def build_messages(history, system_prompt):
 
 
 def main():
+    global URL, MODEL, HEADERS, SSL_VERIFY
+
     parser = argparse.ArgumentParser(description="vLLM Chat Client")
+    parser.add_argument("--url", default="https://127.0.0.1:61800/v1/chat/completions",
+                        help="vLLM completions endpoint (default: https://127.0.0.1:61800/v1/chat/completions)")
+    parser.add_argument("--model", default="gemma4",
+                        help="Model name (default: gemma4)")
+    parser.add_argument("--api-key", default="", dest="api_key",
+                        help="Bearer token for API authentication (default: none)")
     parser.add_argument("--continue", dest="continue_chat", action="store_true",
                        help="Continue chat - load messages from history.json")
     parser.add_argument("--history", default="gen_history/history.json",
@@ -271,6 +282,12 @@ def main():
     parser.add_argument("--verbose", action="store_true",
                        help="Enable verbose mode - dump raw API chunks after each response")
     args = parser.parse_args()
+
+    URL        = args.url
+    MODEL      = args.model
+    HEADERS    = {"Authorization": f"Bearer {args.api_key}"} if args.api_key else {}
+    SSL_VERIFY = False  # self-signed certs used locally
+
     history_file = Path(args.history)
 
     # history is the authoritative record: [{role, content, tokens, thinking?}, ...]

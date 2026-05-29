@@ -18,6 +18,9 @@ Usage:
     python stream_loop.py [options]
 
 Key options:
+    --url URL            vLLM base URL            (default: https://127.0.0.1:61800/v1/chat/completions)
+    --model NAME         Model name               (default: gemma4)
+    --api-key KEY        Bearer token for auth    (default: none)
     --seed TEXT          Opening thought (default: built-in)
     --chunks N           Max generation chunks (0 = unlimited, Ctrl+C to stop)
     --chunk-tokens N     Tokens per API call                  (default: 512)
@@ -31,27 +34,16 @@ import json
 import time
 import argparse
 import requests
-import yaml
+import urllib3
 from pathlib import Path
 
-# ── Server / model ─────────────────────────────────────────────────────────────
-_cfg   = yaml.safe_load(Path("vllm_config.yaml").read_text())
-_host  = _cfg.get("server", {}).get("host", "127.0.0.1")
-_port  = _cfg.get("server", {}).get("port", 61800)
-_key   = _cfg.get("server", {}).get("api_key", "")
-_ssl   = bool(_cfg.get("server", {}).get("ssl_certfile"))
-_scheme = "https" if _ssl else "http"
-_connect_host = "127.0.0.1" if _host == "0.0.0.0" else _host
-URL    = f"{_scheme}://{_connect_host}:{_port}/v1/chat/completions"
-_extra = _cfg.get("additional_args", [])
-_served_idx = _extra.index("--served-model-name") if "--served-model-name" in _extra else -1
-MODEL  = _extra[_served_idx + 1] if _served_idx >= 0 else _cfg.get("model", {}).get("name", "gemma4")
-HEADERS = {"Authorization": f"Bearer {_key}"} if _key else {}
-# Self-signed cert: disable verification warnings for local use
-SSL_VERIFY = False if _ssl else True
-if _ssl:
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Populated in main() from CLI args; module-level so helpers can read them.
+URL        = "https://127.0.0.1:61800/v1/chat/completions"
+MODEL      = "gemma4"
+HEADERS: dict = {}
+SSL_VERIFY = False
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SYSTEM_PROMPT = (
     "You are a continuous thought. You think the way a curious, well-read person does while browsing Wikipedia late at night.\n\n"
@@ -303,11 +295,19 @@ def summarize_chunk(rolling_ctx: str, chunk_text: str) -> str:
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 def main():
+    global URL, MODEL, HEADERS, SSL_VERIFY
+
     parser = argparse.ArgumentParser(
         description="Autonomous stream-of-consciousness generation loop",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
+    parser.add_argument("--url", default="https://127.0.0.1:61800/v1/chat/completions",
+                        help="vLLM completions endpoint (default: https://127.0.0.1:61800/v1/chat/completions)")
+    parser.add_argument("--model", default="gemma4",
+                        help="Model name (default: gemma4)")
+    parser.add_argument("--api-key", default="", dest="api_key",
+                        help="Bearer token for API authentication (default: none)")
     parser.add_argument("--seed", default=DEFAULT_SEED,
                         help="Opening thought seed")
     parser.add_argument("--chunks", type=int, default=0,
@@ -321,6 +321,11 @@ def main():
     parser.add_argument("--continue", dest="resume", action="store_true",
                         help="Resume from the existing history file")
     args = parser.parse_args()
+
+    URL        = args.url
+    MODEL      = args.model
+    HEADERS    = {"Authorization": f"Bearer {args.api_key}"} if args.api_key else {}
+    SSL_VERIFY = False  # self-signed certs used locally
 
     history_path = Path(args.history)
     history_path.parent.mkdir(parents=True, exist_ok=True)
